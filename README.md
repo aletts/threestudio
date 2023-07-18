@@ -65,12 +65,15 @@ The following steps have been tested on Ubuntu20.04.
 - (Optional, Recommended) Create a virtual environment:
 
 ```sh
-python3 -m virtualenv venv
+python3 -m venv venv
 . venv/bin/activate
 
 # Newer pip versions, e.g. pip-23.x, can be much faster than old versions, e.g. pip-20.x.
 # For instance, it caches the wheels of git packages to avoid unnecessarily rebuilding them later.
 python3 -m pip install --upgrade pip
+
+# On some systems, you will also need to install wheel
+python3 -m pip install wheel
 ```
 
 - Install `PyTorch >= 1.12`. We have tested on `torch1.12.1+cu113` and `torch2.0.0+cu118`, but other versions should also work fine.

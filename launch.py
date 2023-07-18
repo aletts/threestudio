@@ -1,9 +1,37 @@
 import argparse
 import contextlib
 import logging
-import os
+import os, signal
 import sys
 
+sys.path.append("CPCargo/src") # use local run_cfg (from same directory)
+
+from CPCargo import CheckpointCargo, Heartbeat
+
+SignalCheckpoint = False
+logger = logging.getLogger("pytorch_lightning")
+
+import pytorch_lightning
+from threestudio.utils.misc import parse_version
+
+if parse_version(pytorch_lightning.__version__) > parse_version("1.8"):
+    from pytorch_lightning.callbacks import Callback
+else:
+    from pytorch_lightning.callbacks.base import Callback
+
+from pytorch_lightning.callbacks.progress import TQDMProgressBar
+from pytorch_lightning.utilities.rank_zero import rank_zero_only, rank_zero_warn
+
+cpcargo_heartbeat = None
+
+class HeartbeatCallback(Callback):
+    def __init__(self, timeout):
+        super().__init__()
+        self.hb = Heartbeat(timeout=timeout)
+
+    @rank_zero_only
+    def on_train_batch_start(self, trainer, pl_module, *args, **kwargs):
+        self.hb.pulse()
 
 class ColoredFilter(logging.Filter):
     """
@@ -38,8 +66,17 @@ class ColoredFilter(logging.Filter):
             record.msg = f"{record.msg}{self.RESET}"
         return True
 
+def signal_handler(signum, frame):
+  # trigger a checkpoint and then exit cleanly
+  # do kill -15 <pid> from a separate shell to trigger checkpoint-then-exit behavior
+  logger.info("Got signal {sig}".format(sig=signal.Signals(signum).name))
+  if signum == signal.SIGTERM:
+    global SignalCheckpoint
+    SignalCheckpoint = True
 
 def main(args, extras) -> None:
+    global SignalCheckpoint
+
     # set CUDA_VISIBLE_DEVICES if needed, then import pytorch-lightning
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     env_gpus_str = os.environ.get("CUDA_VISIBLE_DEVICES", None)
@@ -82,7 +119,6 @@ def main(args, extras) -> None:
     from threestudio.utils.misc import get_rank
     from threestudio.utils.typing import Optional
 
-    logger = logging.getLogger("pytorch_lightning")
     if args.verbose:
         logger.setLevel(logging.DEBUG)
 
@@ -117,9 +153,27 @@ def main(args, extras) -> None:
 
     callbacks = []
     if args.train:
+        ckpts_dir = os.path.join(cfg.trial_dir, "ckpts")
+
+        # Set up saving to S3 via CPCargo
+        # Set a signal handler for sigterm to capture termination request
+        signal.signal(signal.SIGTERM, signal_handler)
+        os.makedirs(ckpts_dir, exist_ok = False) 
+        checkpoint_path = ckpts_dir
+        dest_s3_path = f"s3://{args.dest_s3bucket}/threestudio-ckpts"
+        CP = CheckpointCargo(src_dir=checkpoint_path,
+                            dst_url=dest_s3_path,
+                            region=args.region,
+                            file_regex=r'.*',
+                            recursive=True)
+        
+        # You can start monitoring checkpoint directory after data pipeline subprocesses forks
+        CP.start()
+        callbacks += [HeartbeatCallback(8)]
+
         callbacks += [
             ModelCheckpoint(
-                dirpath=os.path.join(cfg.trial_dir, "ckpts"), **cfg.checkpoint
+                dirpath=ckpts_dir, **cfg.checkpoint
             ),
             LearningRateMonitor(logging_interval="step"),
             CodeSnapshotCallback(
@@ -226,6 +280,12 @@ if __name__ == "__main__":
         action="store_true",
         help="whether to enable dynamic type checking",
     )
+
+    parser.add_argument('-r', '--region', default='us-west-2')
+    #parser.add_argument("--ckpt-dir", default=None, required=True)
+    parser.add_argument('-d', '--dest_s3bucket', default="mod3d-west")
+    #parser.add_argument('-b', '--num-batches', default=100, type=int)
+    parser.add_argument('-c', '--checkpoint_period', default=25, type=int)
 
     args, extras = parser.parse_known_args()
 
