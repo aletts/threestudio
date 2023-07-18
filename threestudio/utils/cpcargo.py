@@ -2,7 +2,7 @@ import os, sys
 import signal
 
 # TODO: Use installed CPCargo package, after CPCargo PR #3 or #4 is merged
-sys.path.append("../CPCargo/src") # use local run_cfg (from same directory)
+sys.path.append("../CPCargo/src") # use local CPCargo
 
 from CPCargo import CheckpointCargo, Heartbeat
 
