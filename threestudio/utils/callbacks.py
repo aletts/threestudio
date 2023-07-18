@@ -1,5 +1,6 @@
-import os
+import os, sys
 import shutil
+import signal
 import subprocess
 
 import pytorch_lightning
@@ -14,6 +15,12 @@ else:
 
 from pytorch_lightning.callbacks.progress import TQDMProgressBar
 from pytorch_lightning.utilities.rank_zero import rank_zero_only, rank_zero_warn
+
+
+# TODO: Use installed CPCargo package, after CPCargo PR #3 or #4 is merged
+sys.path.append("../CPCargo/src") # use local CPCargo
+
+from CPCargo import CheckpointCargo, Heartbeat
 
 
 class VersionedCallback(Callback):
@@ -154,3 +161,37 @@ class ProgressCallback(Callback):
     @rank_zero_only
     def on_predict_start(self, trainer, pl_module):
         self.write(f"Exporting mesh assets ...")
+
+
+SignalCheckpoint = False
+
+class CPCargoCallback(Callback):
+    def __init__(self, dest_s3region, dest_s3bucket, ckpts_dir, timeout, callbacks):
+        super().__init__()
+        # Set up saving to S3 via CPCargo
+        # Set a signal handler for sigterm to capture termination request
+        signal.signal(signal.SIGTERM, self.signal_handler)
+        os.makedirs(ckpts_dir, exist_ok = False) 
+        checkpoint_path = ckpts_dir
+        dest_s3_path = f"s3://{dest_s3bucket}/threestudio-ckpts"
+        CP = CheckpointCargo(src_dir=checkpoint_path,
+                            dst_url=dest_s3_path,
+                            region=dest_s3region,
+                            file_regex=r'.*',
+                            recursive=True)
+
+        # You can start monitoring checkpoint directory after data pipeline subprocesses forks
+        CP.start()
+        self.hb = Heartbeat(timeout=timeout)
+
+    def signal_handler(signum, frame):
+        # trigger a checkpoint and then exit cleanly
+        # do kill -15 <pid> from a separate shell to trigger checkpoint-then-exit behavior
+        #logger.info("Got signal {sig}".format(sig=signal.Signals(signum).name))
+        if signum == signal.SIGTERM:
+            global SignalCheckpoint
+            SignalCheckpoint = True
+
+    @rank_zero_only
+    def on_train_batch_start(self, trainer, pl_module, *args, **kwargs):
+        self.hb.pulse()

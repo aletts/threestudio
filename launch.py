@@ -3,7 +3,6 @@ import contextlib
 import logging
 import os, signal
 import sys
-from threestudio.utils.cpcargo import CPCargoCheckpointing
 
 logger = logging.getLogger("pytorch_lightning")
 
@@ -78,6 +77,7 @@ def main(args, extras) -> None:
     from threestudio.utils.callbacks import (
         CodeSnapshotCallback,
         ConfigSnapshotCallback,
+        CPCargoCallback,
         CustomProgressBar,
         ProgressCallback,
     )
@@ -120,11 +120,12 @@ def main(args, extras) -> None:
     callbacks = []
     if args.train:
         ckpts_dir = os.path.join(cfg.trial_dir, "ckpts")
-
         cpcargo_timeout = 8
-        cpcargo_checkpointing = CPCargoCheckpointing(args.region, args.dest_s3bucket, ckpts_dir, cpcargo_timeout, callbacks)
 
         callbacks += [
+            CPCargoCallback(
+                args.region, args.dest_s3bucket, ckpts_dir, cpcargo_timeout, callbacks
+            ),
             ModelCheckpoint(
                 dirpath=ckpts_dir, **cfg.checkpoint
             ),
